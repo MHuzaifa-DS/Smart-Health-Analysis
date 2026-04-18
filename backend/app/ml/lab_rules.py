@@ -1,15 +1,17 @@
 """
 ml/lab_rules.py — Rule-based lab report analysis engine.
-Compares patient values against clinical normal ranges and flags abnormalities.
+
+FIXES vs previous version:
+  FIX 1 — Added triglycerides to LAB_RANGES (was missing — showed "unknown")
+  FIX 2 — hdl now falls back to gender-agnostic range when gender not provided
+  FIX 3 — Added rbc and hematocrit ranges
+  FIX 4 — Added Dyslipidemia disease pattern
 """
 from typing import Dict, List, Optional, Any, Tuple
 
 
-# ── Normal ranges ──────────────────────────────────────────────────────────────
-# Format: (critical_low, low, high, critical_high, unit, display_name)
-
 LAB_RANGES: Dict[str, Dict] = {
-    # Blood Glucose
+    # ── Blood Glucose ──────────────────────────────────────────────────────────
     "fasting_glucose": {
         "critical_low": 50,   "low": 70,    "high": 99,   "critical_high": 400,
         "unit": "mg/dL",      "display": "Fasting Blood Glucose",
@@ -24,14 +26,9 @@ LAB_RANGES: Dict[str, Dict] = {
         "critical_low": None, "low": None,  "high": 5.6,  "critical_high": 10.0,
         "unit": "%",          "display": "HbA1c (Glycated Hemoglobin)",
         "disease_hint": "diabetes",
-        "ranges_text": {
-            "normal":     "< 5.7% (Normal)",
-            "prediabetes":"5.7% – 6.4% (Prediabetes)",
-            "diabetes":   "≥ 6.5% (Diabetes)",
-        },
     },
 
-    # Blood Pressure
+    # ── Blood Pressure ─────────────────────────────────────────────────────────
     "systolic_bp": {
         "critical_low": 70,   "low": 90,    "high": 120,  "critical_high": 180,
         "unit": "mmHg",       "display": "Systolic Blood Pressure",
@@ -42,8 +39,13 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "mmHg",       "display": "Diastolic Blood Pressure",
         "disease_hint": "hypertension",
     },
+    "heart_rate": {
+        "critical_low": 40,   "low": 60,    "high": 100,  "critical_high": 150,
+        "unit": "bpm",        "display": "Heart Rate",
+        "disease_hint": None,
+    },
 
-    # Blood Count — Hemoglobin (gender-specific)
+    # ── Hemoglobin (gender-specific) ───────────────────────────────────────────
     "hemoglobin_male": {
         "critical_low": 7.0,  "low": 13.5,  "high": 17.5, "critical_high": 20.0,
         "unit": "g/dL",       "display": "Hemoglobin (Male)",
@@ -54,22 +56,32 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "g/dL",       "display": "Hemoglobin (Female)",
         "disease_hint": "anemia",
     },
-    "hemoglobin": {  # default (gender-agnostic)
+    "hemoglobin": {
         "critical_low": 7.0,  "low": 12.0,  "high": 17.5, "critical_high": 20.0,
         "unit": "g/dL",       "display": "Hemoglobin",
         "disease_hint": "anemia",
     },
 
-    # Blood Count — Other
+    # ── CBC indices ────────────────────────────────────────────────────────────
     "wbc": {
         "critical_low": 2000, "low": 4500,  "high": 11000, "critical_high": 30000,
         "unit": "/μL",        "display": "White Blood Cells (WBC)",
         "disease_hint": None,
     },
     "platelets": {
-        "critical_low": 50000,"low": 150000,"high": 400000,"critical_high": 1000000,
-        "unit": "/μL",        "display": "Platelets",
+        "critical_low": 50000, "low": 150000, "high": 400000, "critical_high": 1000000,
+        "unit": "/μL",         "display": "Platelets",
         "disease_hint": None,
+    },
+    "rbc": {
+        "critical_low": 2.0,  "low": 4.5,   "high": 5.9,  "critical_high": 7.0,
+        "unit": "M/μL",       "display": "RBC Count",
+        "disease_hint": "anemia",
+    },
+    "hematocrit": {
+        "critical_low": 20,   "low": 41,    "high": 53,   "critical_high": 60,
+        "unit": "%",          "display": "Hematocrit (PCV)",
+        "disease_hint": "anemia",
     },
     "mcv": {
         "critical_low": 50,   "low": 80,    "high": 100,  "critical_high": 130,
@@ -87,7 +99,7 @@ LAB_RANGES: Dict[str, Dict] = {
         "disease_hint": "anemia",
     },
 
-    # Lipids
+    # ── Lipids ─────────────────────────────────────────────────────────────────
     "total_cholesterol": {
         "critical_low": None, "low": None,  "high": 200,  "critical_high": 300,
         "unit": "mg/dL",      "display": "Total Cholesterol",
@@ -108,8 +120,25 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "mg/dL",      "display": "HDL Cholesterol (Female)",
         "disease_hint": None,
     },
+    "hdl": {
+        # FIX 2: gender-agnostic fallback (used when gender unknown)
+        "critical_low": 20,   "low": 40,    "high": 999,  "critical_high": None,
+        "unit": "mg/dL",      "display": "HDL Cholesterol",
+        "disease_hint": None,
+    },
+    # FIX 1: triglycerides was missing — caused "unknown" status
+    "triglycerides": {
+        "critical_low": None, "low": None,  "high": 150,  "critical_high": 500,
+        "unit": "mg/dL",      "display": "Triglycerides",
+        "disease_hint": "hypertension",
+    },
+    "vldl": {
+        "critical_low": None, "low": None,  "high": 30,   "critical_high": 100,
+        "unit": "mg/dL",      "display": "VLDL Cholesterol",
+        "disease_hint": None,
+    },
 
-    # Kidney / Liver
+    # ── Kidney ─────────────────────────────────────────────────────────────────
     "creatinine": {
         "critical_low": None, "low": 0.7,   "high": 1.3,  "critical_high": 10.0,
         "unit": "mg/dL",      "display": "Serum Creatinine",
@@ -120,6 +149,13 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "mg/dL",      "display": "Blood Urea Nitrogen (BUN)",
         "disease_hint": None,
     },
+    "uric_acid": {
+        "critical_low": None, "low": 3.5,   "high": 7.2,  "critical_high": 12.0,
+        "unit": "mg/dL",      "display": "Uric Acid",
+        "disease_hint": None,
+    },
+
+    # ── Liver ──────────────────────────────────────────────────────────────────
     "alt": {
         "critical_low": None, "low": 7,     "high": 56,   "critical_high": 500,
         "unit": "U/L",        "display": "ALT (Liver Enzyme)",
@@ -130,15 +166,40 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "U/L",        "display": "AST (Liver Enzyme)",
         "disease_hint": None,
     },
+    "alp": {
+        "critical_low": None, "low": 44,    "high": 147,  "critical_high": 1000,
+        "unit": "U/L",        "display": "Alkaline Phosphatase (ALP)",
+        "disease_hint": None,
+    },
+    "total_bilirubin": {
+        "critical_low": None, "low": None,  "high": 1.2,  "critical_high": 15.0,
+        "unit": "mg/dL",      "display": "Total Bilirubin",
+        "disease_hint": None,
+    },
+    "albumin": {
+        "critical_low": 2.0,  "low": 3.5,   "high": 5.0,  "critical_high": None,
+        "unit": "g/dL",       "display": "Serum Albumin",
+        "disease_hint": None,
+    },
 
-    # Thyroid
+    # ── Thyroid ────────────────────────────────────────────────────────────────
     "tsh": {
         "critical_low": 0.1,  "low": 0.4,   "high": 4.0,  "critical_high": 10.0,
         "unit": "mIU/L",      "display": "Thyroid Stimulating Hormone (TSH)",
         "disease_hint": None,
     },
+    "free_t4": {
+        "critical_low": None, "low": 0.8,   "high": 1.8,  "critical_high": None,
+        "unit": "ng/dL",      "display": "Free T4",
+        "disease_hint": None,
+    },
+    "free_t3": {
+        "critical_low": None, "low": 2.3,   "high": 4.2,  "critical_high": None,
+        "unit": "pg/mL",      "display": "Free T3",
+        "disease_hint": None,
+    },
 
-    # Iron Studies
+    # ── Iron Studies ───────────────────────────────────────────────────────────
     "serum_iron": {
         "critical_low": 20,   "low": 60,    "high": 170,  "critical_high": 300,
         "unit": "μg/dL",      "display": "Serum Iron",
@@ -149,9 +210,42 @@ LAB_RANGES: Dict[str, Dict] = {
         "unit": "ng/mL",      "display": "Serum Ferritin",
         "disease_hint": "anemia",
     },
+    "tibc": {
+        "critical_low": None, "low": 250,   "high": 370,  "critical_high": None,
+        "unit": "μg/dL",      "display": "Total Iron Binding Capacity (TIBC)",
+        "disease_hint": "anemia",
+    },
+
+    # ── Vitamins / Electrolytes ────────────────────────────────────────────────
+    "vitamin_b12": {
+        "critical_low": 100,  "low": 200,   "high": 900,  "critical_high": None,
+        "unit": "pg/mL",      "display": "Vitamin B12",
+        "disease_hint": None,
+    },
+    "vitamin_d": {
+        "critical_low": 10,   "low": 30,    "high": 100,  "critical_high": None,
+        "unit": "ng/mL",      "display": "Vitamin D (25-OH)",
+        "disease_hint": None,
+    },
+    "calcium": {
+        "critical_low": 7.0,  "low": 8.5,   "high": 10.5, "critical_high": 13.0,
+        "unit": "mg/dL",      "display": "Serum Calcium",
+        "disease_hint": None,
+    },
+    "sodium": {
+        "critical_low": 120,  "low": 136,   "high": 145,  "critical_high": 160,
+        "unit": "mEq/L",      "display": "Serum Sodium",
+        "disease_hint": None,
+    },
+    "potassium": {
+        "critical_low": 2.5,  "low": 3.5,   "high": 5.0,  "critical_high": 6.5,
+        "unit": "mEq/L",      "display": "Serum Potassium",
+        "disease_hint": None,
+    },
 }
 
-# Disease pattern detection from lab combinations
+# ── Disease pattern detection ──────────────────────────────────────────────────
+
 DISEASE_PATTERNS = {
     "Type 2 Diabetes": {
         "criteria": [
@@ -188,9 +282,9 @@ DISEASE_PATTERNS = {
     },
     "Anemia": {
         "criteria": [
-            {"test": "hemoglobin",        "operator": "<", "value": 12.0},
-            {"test": "hemoglobin_male",   "operator": "<", "value": 13.5},
-            {"test": "hemoglobin_female", "operator": "<", "value": 12.0},
+            {"test": "hemoglobin",        "operator": "<",  "value": 12.0},
+            {"test": "hemoglobin_male",   "operator": "<",  "value": 13.5},
+            {"test": "hemoglobin_female", "operator": "<",  "value": 12.0},
         ],
         "logic": "OR",
         "confidence": "high",
@@ -203,6 +297,24 @@ DISEASE_PATTERNS = {
         "logic": "AND",
         "confidence": "high",
     },
+    "Microcytic Anemia": {
+        "criteria": [
+            {"test": "mcv", "operator": "<", "value": 80},
+            {"test": "mch", "operator": "<", "value": 27},
+        ],
+        "logic": "AND",
+        "confidence": "high",
+    },
+    # FIX 4: Added dyslipidemia pattern
+    "Dyslipidemia": {
+        "criteria": [
+            {"test": "total_cholesterol", "operator": ">=", "value": 200},
+            {"test": "ldl",               "operator": ">=", "value": 130},
+            {"test": "triglycerides",     "operator": ">=", "value": 150},
+        ],
+        "logic": "OR",
+        "confidence": "medium",
+    },
 }
 
 
@@ -212,14 +324,16 @@ def analyze_lab_value(
     patient_gender: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Analyze a single lab value against normal ranges."""
-    # Apply gender-specific ranges
+
+    # Apply gender-specific range keys
     effective_test = test_name
-    if test_name == "hemoglobin" and patient_gender:
+    if test_name == "hemoglobin" and patient_gender in ("male", "female"):
         effective_test = f"hemoglobin_{patient_gender}"
-    if test_name in ("hdl",) and patient_gender:
+    elif test_name == "hdl" and patient_gender in ("male", "female"):
         effective_test = f"hdl_{patient_gender}"
 
     ranges = LAB_RANGES.get(effective_test) or LAB_RANGES.get(test_name)
+
     if not ranges:
         return {
             "test_name": test_name,
@@ -231,42 +345,45 @@ def analyze_lab_value(
             "emergency": False,
         }
 
-    unit = ranges["unit"]
-    low = ranges.get("low")
-    high = ranges.get("high")
-    crit_low = ranges.get("critical_low")
+    unit      = ranges["unit"]
+    low       = ranges.get("low")
+    high      = ranges.get("high")
+    crit_low  = ranges.get("critical_low")
     crit_high = ranges.get("critical_high")
 
-    # Determine status
     emergency = False
     if crit_low is not None and value < crit_low:
-        status = "critical_low"
+        status    = "critical_low"
         emergency = True
-        interp = f"⚠️ CRITICAL LOW: {ranges['display']} is dangerously low at {value} {unit}. Immediate medical attention required."
+        interp    = (f"⚠️ CRITICAL LOW: {ranges['display']} is dangerously low "
+                     f"at {value} {unit}. Immediate medical attention required.")
     elif low is not None and value < low:
         status = "low"
-        interp = f"{ranges['display']} is below normal ({value} {unit}). Normal range: {low}–{high} {unit}."
+        interp = (f"{ranges['display']} is below normal ({value} {unit}). "
+                  f"Normal range: {low}–{high} {unit}.")
     elif crit_high is not None and value > crit_high:
-        status = "critical_high"
+        status    = "critical_high"
         emergency = True
-        interp = f"⚠️ CRITICAL HIGH: {ranges['display']} is dangerously elevated at {value} {unit}. Immediate medical attention required."
+        interp    = (f"⚠️ CRITICAL HIGH: {ranges['display']} is dangerously elevated "
+                     f"at {value} {unit}. Immediate medical attention required.")
     elif high is not None and value > high:
         status = "high"
-        interp = f"{ranges['display']} is above normal ({value} {unit}). Normal range: {low}–{high} {unit}."
+        interp = (f"{ranges['display']} is above normal ({value} {unit}). "
+                  f"Normal range: {low}–{high} {unit}.")
     else:
         status = "normal"
         interp = f"{ranges['display']} is within normal range ({value} {unit})."
 
-    normal_range = f"{low}–{high} {unit}" if (low and high) else f"See reference"
+    normal_range = f"{low}–{high} {unit}" if (low is not None and high is not None) else "See reference"
 
     return {
-        "test_name": test_name,
-        "value": value,
-        "unit": unit,
-        "status": status,
+        "test_name":    test_name,
+        "value":        value,
+        "unit":         unit,
+        "status":       status,
         "normal_range": normal_range,
         "interpretation": interp,
-        "emergency": emergency,
+        "emergency":    emergency,
         "disease_hint": ranges.get("disease_hint"),
     }
 
@@ -286,33 +403,28 @@ def detect_disease_patterns(
                 continue
 
             val = lab_values[test]
-            op = criterion["operator"]
+            op  = criterion["operator"]
 
-            if op == ">=" and val >= criterion["value"]:
-                criteria_results.append(True)
-            elif op == "<=" and val <= criterion["value"]:
-                criteria_results.append(True)
-            elif op == ">" and val > criterion["value"]:
-                criteria_results.append(True)
-            elif op == "<" and val < criterion["value"]:
-                criteria_results.append(True)
+            if   op == ">=" and val >= criterion["value"]:         criteria_results.append(True)
+            elif op == "<=" and val <= criterion["value"]:         criteria_results.append(True)
+            elif op == ">"  and val >  criterion["value"]:         criteria_results.append(True)
+            elif op == "<"  and val <  criterion["value"]:         criteria_results.append(True)
             elif op == "between" and criterion["low"] <= val <= criterion["high"]:
-                criteria_results.append(True)
-            else:
-                criteria_results.append(False)
+                                                                   criteria_results.append(True)
+            else:                                                  criteria_results.append(False)
 
         if not criteria_results:
             continue
 
-        logic = pattern["logic"]
-        matched = any(criteria_results) if logic == "OR" else all(criteria_results)
+        matched = (any(criteria_results) if pattern["logic"] == "OR"
+                   else all(criteria_results))
 
         if matched:
             detected.append({
-                "condition": disease,
-                "confidence": pattern["confidence"],
+                "condition":        disease,
+                "confidence":       pattern["confidence"],
                 "matched_criteria": sum(criteria_results),
-                "total_criteria": len(criteria_results),
+                "total_criteria":   len(criteria_results),
             })
 
     return detected
@@ -338,13 +450,12 @@ def analyze_full_report(
     Analyze a complete set of lab values.
     Returns: (test_results, overall_status, likely_conditions)
     """
-    results = []
-    for test_name, value in lab_values.items():
-        result = analyze_lab_value(test_name, value, patient_gender)
-        results.append(result)
-
-    overall = compute_overall_status(results)
-    conditions = detect_disease_patterns(lab_values)
-    condition_names = [c["condition"] for c in conditions]
+    results = [
+        analyze_lab_value(test_name, value, patient_gender)
+        for test_name, value in lab_values.items()
+    ]
+    overall          = compute_overall_status(results)
+    conditions       = detect_disease_patterns(lab_values)
+    condition_names  = [c["condition"] for c in conditions]
 
     return results, overall, condition_names

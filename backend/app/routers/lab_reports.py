@@ -1,6 +1,9 @@
 """
 routers/lab_reports.py — Lab report analysis endpoints.
 Supports both manual value input and PDF/image upload with OCR.
+
+FIX: upload endpoint now passes file_url to analyze_lab_report so it
+     is persisted in the lab_reports DB row.
 """
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from typing import Optional
@@ -45,7 +48,6 @@ async def analyze_lab_report(
         }
     }
     """
-    # Supplement with profile data
     if not request.patient_age and current_user.age:
         request.patient_age = current_user.age
     if not request.patient_gender and current_user.gender:
@@ -56,6 +58,7 @@ async def analyze_lab_report(
             request=request,
             user_id=current_user.id,
             supabase=supabase,
+            file_url=None,
         )
     except Exception as e:
         log.error("lab_reports.analyze_error", user_id=current_user.id, error=str(e))
@@ -74,14 +77,12 @@ async def upload_lab_report(
     Upload a PDF or image lab report. OCR extracts values automatically.
     Falls back gracefully if OCR finds no values — returns 422 with message.
     """
-    # Validate file type
     if file.content_type not in ALLOWED_MIME_TYPES:
         raise HTTPException(
             status_code=415,
             detail=f"Unsupported file type: {file.content_type}. Allowed: PDF, PNG, JPEG.",
         )
 
-    # Read file bytes
     file_bytes = await file.read()
     size_mb = len(file_bytes) / (1024 * 1024)
     if size_mb > MAX_FILE_SIZE_MB:
@@ -111,8 +112,10 @@ async def upload_lab_report(
         raise HTTPException(
             status_code=422,
             detail={
-                "message": "Could not extract lab values from the uploaded file. "
-                           "Please enter values manually using the /lab-reports/analyze endpoint.",
+                "message": (
+                    "Could not extract lab values from the uploaded file. "
+                    "Please enter values manually using the /lab-reports/analyze endpoint."
+                ),
                 "raw_text_preview": raw_text[:300] if raw_text else "No text extracted.",
                 "tip": "Ensure the file is clear and not password-protected.",
             },
@@ -120,17 +123,18 @@ async def upload_lab_report(
 
     log.info("lab_reports.ocr_success", extracted_count=len(extracted_values))
 
-    # ── Optionally upload file to Supabase Storage ─────────────────────────────
+    # ── Upload file to Supabase Storage (best-effort) ──────────────────────────
     file_url = None
     try:
-        storage_path = f"{current_user.id}/{file.filename}"
         from app.config import settings
+        storage_path = f"{current_user.id}/{file.filename}"
         supabase.storage.from_(settings.storage_bucket).upload(
             path=storage_path,
             file=file_bytes,
             file_options={"content-type": file.content_type},
         )
         file_url = supabase.storage.from_(settings.storage_bucket).get_public_url(storage_path)
+        log.info("lab_reports.storage_upload_success", path=storage_path)
     except Exception as e:
         log.warning("lab_reports.storage_upload_failed", error=str(e))
 
@@ -148,6 +152,7 @@ async def upload_lab_report(
             request=lab_request,
             user_id=current_user.id,
             supabase=supabase,
+            file_url=file_url,   # FIX: pass storage URL to be saved in DB
         )
         return result
     except Exception as e:
@@ -173,9 +178,9 @@ async def get_lab_history(
         )
         return {
             "reports": result.data,
-            "total": len(result.data),
-            "skip": pagination["skip"],
-            "limit": pagination["limit"],
+            "total":   len(result.data),
+            "skip":    pagination["skip"],
+            "limit":   pagination["limit"],
         }
     except Exception as e:
         log.error("lab_reports.history_fetch_failed", user_id=current_user.id, error=str(e))

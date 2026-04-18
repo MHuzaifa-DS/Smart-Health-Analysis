@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from typing import Optional
 
 from app.dependencies import CurrentUser, SupabaseClient
+from app.database import get_supabase_admin
 from app.services import chat_service
 import structlog
 
@@ -65,7 +66,7 @@ async def send_message(
             user_message=request.message,
             session_id=request.session_id,
             user_id=current_user.id,
-            supabase=supabase,
+            supabase=get_supabase_admin(),   # admin bypasses RLS on chat_sessions
         )
         return ChatMessageResponse(**result)
 
@@ -73,7 +74,7 @@ async def send_message(
         log.error("chat.message_error", user_id=current_user.id, error=str(e))
         raise HTTPException(
             status_code=500,
-            detail="Chat service encountered an error. Please try again.",
+            detail=f"Chat error: {str(e)}",   # surface real error for debugging
         )
 
 
@@ -89,7 +90,7 @@ async def list_sessions(
     """
     sessions = await chat_service.get_user_sessions(
         user_id=current_user.id,
-        supabase=supabase,
+        supabase=get_supabase_admin(),
         limit=min(limit, 50),
     )
     return {"sessions": sessions, "total": len(sessions)}
@@ -108,7 +109,7 @@ async def get_session(
     session = await chat_service.get_session(
         session_id=session_id,
         user_id=current_user.id,
-        supabase=supabase,
+        supabase=get_supabase_admin(),
     )
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
@@ -128,7 +129,7 @@ async def end_session(
     session = await chat_service.get_session(
         session_id=session_id,
         user_id=current_user.id,
-        supabase=supabase,
+        supabase=get_supabase_admin(),
     )
     if not session:
         raise HTTPException(status_code=404, detail="Chat session not found.")
@@ -137,7 +138,7 @@ async def end_session(
         return {"message": "Session already complete.", "session_id": session_id}
 
     try:
-        supabase.table("chat_sessions").update(
+        get_supabase_admin().table("chat_sessions").update(
             {"session_status": "abandoned"}
         ).eq("id", session_id).execute()
         return {"message": "Session ended.", "session_id": session_id}

@@ -73,10 +73,8 @@ def retrieve(
     Main retrieval function.
 
     1. Embed the query
-    2. Query each relevant namespace
-    3. Weight scores by namespace importance
-    4. Deduplicate (same disease can appear in multiple namespaces)
-    5. Return top-k by weighted score
+    2. Query the default namespace (all vectors are in the default namespace)
+    3. Filter by minimum score and return top-k
     """
     top_k_per_namespace = top_k_per_namespace or settings.rag_top_k
     min_score = min_score or settings.rag_min_score
@@ -84,55 +82,37 @@ def retrieve(
     # Step 1: Embed query
     query_embedding = embedder.embed_single(query_text)
 
-    # Step 2: Determine which namespaces to search
-    weights = QUERY_TYPE_WEIGHTS.get(query_type, QUERY_TYPE_WEIGHTS["general"])
-
-    # Step 3: Query each namespace
-    all_chunks: List[RetrievedChunk] = []
-    seen_ids: set = set()
-
     pinecone_filter = {}
     if disease_filter:
         pinecone_filter = {"diseases_mentioned": {"$in": disease_filter}}
 
-    for namespace, weight in weights.items():
-        try:
-            matches = pinecone_client.query_vectors(
-                embedding=query_embedding,
-                namespace=namespace,
-                top_k=top_k_per_namespace,
-                filter=pinecone_filter if pinecone_filter else None,
-                min_score=min_score * 0.8,  # slightly looser per-namespace, filter after weighting
+    # Step 2: Query default namespace (all data lives here)
+    all_chunks: List[RetrievedChunk] = []
+    try:
+        matches = pinecone_client.query_vectors(
+            embedding=query_embedding,
+            namespace="",   # default namespace contains all 23k vectors
+            top_k=max(total_top_k * 2, top_k_per_namespace * 4),
+            filter=pinecone_filter if pinecone_filter else None,
+            min_score=0.0,
+        )
+
+        for match in matches:
+            chunk = RetrievedChunk(
+                chunk_id=match["id"],
+                score=match["score"],
+                metadata=match["metadata"],
+                namespace="default",
             )
+            all_chunks.append(chunk)
 
-            for match in matches:
-                chunk_id = match["id"]
-                if chunk_id in seen_ids:
-                    # If already seen from another namespace, keep the higher weighted score
-                    for existing in all_chunks:
-                        if existing.chunk_id == chunk_id:
-                            existing.score = max(existing.score, match["score"] * weight)
-                    continue
+    except Exception as e:
+        log.error("retriever.query_failed", error=str(e))
 
-                seen_ids.add(chunk_id)
-                weighted_score = match["score"] * weight
-                chunk = RetrievedChunk(
-                    chunk_id=chunk_id,
-                    score=weighted_score,
-                    metadata=match["metadata"],
-                    namespace=namespace,
-                )
-                all_chunks.append(chunk)
-
-        except Exception as e:
-            log.warning("retriever.namespace_query_failed", namespace=namespace, error=str(e))
-            continue
-
-    # Step 4: Filter by minimum weighted score and sort
+    # Step 3: Filter by minimum score and sort
     filtered = [c for c in all_chunks if c.score >= min_score * 0.5]
     filtered.sort(key=lambda c: c.score, reverse=True)
 
-    # Step 5: Return top-k
     result = filtered[:total_top_k]
 
     log.info(

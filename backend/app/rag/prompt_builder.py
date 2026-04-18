@@ -1,6 +1,10 @@
 """
 rag/prompt_builder.py — Builds structured prompts from retrieved chunks
 and calls the LLM (Claude via Anthropic API) to generate predictions.
+
+FIX: generate_lab_interpretation now gracefully handles plain-text LLM
+     responses. If parse_llm_json fails, the raw text is used directly
+     as the interpretation field instead of crashing.
 """
 import json
 import re
@@ -13,7 +17,8 @@ from app.rag.retriever import RetrievedChunk
 
 log = structlog.get_logger()
 
-# ── System prompt ───────────────────────────────────────────────────────────────
+# ── System prompts ──────────────────────────────────────────────────────────────
+
 SYMPTOM_SYSTEM_PROMPT = """You are a medical AI assistant integrated into a smart health system.
 Your role is to analyze patient symptoms using ONLY the provided medical reference context 
 from the Gale Encyclopedia of Medicine (3rd Edition).
@@ -38,9 +43,12 @@ CRITICAL RULES:
 2. Explain what each abnormal value means in plain language
 3. Identify patterns that suggest specific conditions
 4. Always recommend professional medical review
-5. Respond ONLY in valid JSON"""
+5. Respond ONLY in valid JSON — no markdown, no preamble, no text outside the JSON object
+
+Your response must be a single valid JSON object. Do not write anything before or after it."""
 
 # ── Prompt templates ────────────────────────────────────────────────────────────
+
 SYMPTOM_PROMPT_TEMPLATE = """MEDICAL REFERENCE CONTEXT:
 {context}
 
@@ -97,7 +105,9 @@ Patient info: Age {age}, Gender {gender}
 
 ---
 
-Based ONLY on the medical reference context, interpret these lab values and respond with this exact JSON:
+Based ONLY on the medical reference context, interpret these lab values.
+
+YOU MUST respond with ONLY this JSON object — no text before or after it:
 
 {{
   "interpretation": "2-3 paragraph plain-English explanation of what these results mean",
@@ -117,10 +127,7 @@ Based ONLY on the medical reference context, interpret these lab values and resp
 
 
 def build_context_string(chunks: List[RetrievedChunk], max_chars: int = 12000) -> str:
-    """
-    Format retrieved chunks into a numbered context string for the prompt.
-    Truncates to max_chars to stay within LLM context window.
-    """
+    """Format retrieved chunks into a numbered context string for the prompt."""
     context_parts = []
     total_chars = 0
 
@@ -159,26 +166,31 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
 def parse_llm_json(raw_response: str) -> Dict[str, Any]:
     """
     Safely parse JSON from LLM response.
-    Handles common LLM formatting issues (markdown fences, trailing commas).
+    Handles markdown fences, leading/trailing text, and truncated JSON.
     """
-    # Strip markdown code fences if present
     text = raw_response.strip()
+
+    # Strip markdown code fences
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     text = text.strip()
 
+    # Attempt 1: direct parse
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        # Try to extract JSON object
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except Exception:
-                pass
-        log.error("prompt_builder.json_parse_failed", response_preview=text[:200])
-        raise ValueError(f"LLM returned unparseable response: {text[:200]}")
+        pass
+
+    # Attempt 2: extract the first {...} block (handles preamble text)
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    log.error("prompt_builder.json_parse_failed", response_preview=text[:200])
+    raise ValueError(f"LLM returned unparseable response: {text[:200]}")
 
 
 def generate_symptom_prediction(
@@ -189,11 +201,8 @@ def generate_symptom_prediction(
     age: Optional[int] = None,
     gender: Optional[str] = None,
     free_text: Optional[str] = None,
-) -> Dict[str, Any]:
-    """
-    Full RAG prediction pipeline for symptoms.
-    Returns parsed JSON dict matching PredictionResponse schema.
-    """
+) -> tuple[Dict[str, Any], str]:
+    """Full RAG prediction pipeline for symptoms."""
     context = build_context_string(chunks)
 
     user_prompt = SYMPTOM_PROMPT_TEMPLATE.format(
@@ -210,8 +219,6 @@ def generate_symptom_prediction(
 
     raw = call_llm(SYMPTOM_SYSTEM_PROMPT, user_prompt)
     parsed = parse_llm_json(raw)
-
-    # Validate and sanitize
     parsed = _sanitize_prediction_response(parsed, chunks)
 
     log.info(
@@ -220,7 +227,7 @@ def generate_symptom_prediction(
         emergency=parsed.get("emergency", False),
     )
 
-    return parsed, raw  # Return both for storage
+    return parsed, raw
 
 
 def generate_lab_interpretation(
@@ -229,10 +236,16 @@ def generate_lab_interpretation(
     age: Optional[int] = None,
     gender: Optional[str] = None,
 ) -> tuple[Dict[str, Any], str]:
-    """RAG-powered lab report interpretation."""
+    """
+    RAG-powered lab report interpretation.
+
+    FIX: If the LLM returns plain text instead of JSON (which Claude sometimes
+    does for rich interpretations), we catch the parse error and use the raw
+    text directly as the 'interpretation' field. This ensures the user always
+    sees the AI interpretation instead of a silent failure.
+    """
     context = build_context_string(chunks)
 
-    # Format lab values for the prompt
     lab_lines = [f"  - {test}: {value}" for test, value in lab_values.items()]
     lab_summary = "\n".join(lab_lines)
 
@@ -244,9 +257,30 @@ def generate_lab_interpretation(
     )
 
     raw = call_llm(LAB_SYSTEM_PROMPT, user_prompt)
-    parsed = parse_llm_json(raw)
 
-    return parsed, raw
+    # Attempt JSON parse
+    try:
+        parsed = parse_llm_json(raw)
+        log.info("prompt_builder.lab_interpretation_complete", format="json")
+        return parsed, raw
+
+    except ValueError:
+        # LLM returned a high-quality plain-text interpretation instead of JSON.
+        # Use it directly — the user gets the full explanation and nothing is lost.
+        log.info(
+            "prompt_builder.lab_interpretation_plain_text_fallback",
+            chars=len(raw),
+            hint="LLM returned plain text — using as interpretation field directly",
+        )
+        fallback = {
+            "interpretation":     raw.strip(),
+            "likely_conditions":  [],
+            "abnormal_flags":     [],
+            "recommended_followup": [],
+            "emergency":          False,
+            "disclaimer":         "These results require professional medical evaluation.",
+        }
+        return fallback, raw
 
 
 def _sanitize_prediction_response(
@@ -260,14 +294,12 @@ def _sanitize_prediction_response(
     valid_chunk_ids = {c.chunk_id for c in chunks}
 
     for pred in data["predictions"]:
-        # Ensure confidence_score is a float in [0, 1]
         score = pred.get("confidence_score", 0.0)
         try:
             pred["confidence_score"] = max(0.0, min(1.0, float(score)))
         except (TypeError, ValueError):
             pred["confidence_score"] = 0.0
 
-        # Derive confidence label from score
         s = pred["confidence_score"]
         if s >= 0.75:
             pred["confidence"] = "high"
@@ -276,24 +308,17 @@ def _sanitize_prediction_response(
         else:
             pred["confidence"] = "low"
 
-        # Validate source chunk IDs
         pred["source_chunks"] = [
             cid for cid in pred.get("source_chunks", []) if cid in valid_chunk_ids
         ]
-
-        # Ensure required fields
         pred.setdefault("matching_symptoms", [])
         pred.setdefault("explanation", "See medical context for details.")
 
-    # Remove predictions below minimum confidence
     data["predictions"] = [
         p for p in data["predictions"] if p["confidence_score"] >= 0.20
     ]
-
-    # Sort by confidence
     data["predictions"].sort(key=lambda p: p["confidence_score"], reverse=True)
 
-    # Ensure boolean fields
     data["emergency"] = bool(data.get("emergency", False))
     data.setdefault("recommended_tests", [])
     data.setdefault(

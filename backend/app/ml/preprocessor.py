@@ -44,8 +44,7 @@ ANEMIA_FEATURES = [
     "mch",                 # mean corpuscular hemoglobin (pg)
     "mchc",                # mean corpuscular hemoglobin concentration (g/dL)
     "mcv",                 # mean corpuscular volume (fL)
-    "age",
-    "gender_female",       # 1=female (lower normal range)
+    # NOTE: model trained on 4 features only (Hemoglobin, MCH, MCHC, MCV)
 ]
 
 # ── Symptom-to-feature mapping ─────────────────────────────────────────────────
@@ -99,8 +98,6 @@ ANEMIA_DEFAULTS = {
     "mch": 27.0,
     "mchc": 32.0,
     "mcv": 80.0,
-    "age": 40,
-    "gender_female": 0,
 }
 
 
@@ -183,11 +180,6 @@ class FeatureBuilder:
         gender: Optional[str] = None,
     ) -> np.ndarray:
         features = dict(ANEMIA_DEFAULTS)
-
-        if age:
-            features["age"] = age
-        if gender == "female":
-            features["gender_female"] = 1
 
         if lab_values:
             mapping = {

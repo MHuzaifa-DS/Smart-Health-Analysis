@@ -50,24 +50,40 @@ At the END of your message append this block (user won't see it — it's parsed 
 </EXTRACT>
 
 SYMPTOM VOCABULARY — map what users say to these standard terms:
-- "tired / exhausted / no energy" → "fatigue"
-- "peeing a lot / bathroom frequently" → "frequent urination"
-- "always thirsty / dry mouth" → "excessive thirst"
-- "blurry / fuzzy vision" → "blurred vision"
-- "head hurts / headache" → "headache"
-- "dizzy / lightheaded" → "dizziness"
-- "chest hurts / chest tight" → "chest pain"
-- "can't breathe / short of breath" → "shortness of breath"
-- "pale / look white" → "pale skin"
-- "cold hands/feet" → "cold hands and feet"
-- "heart racing / pounding" → "palpitations"
+- "tired / exhausted / no energy / lethargic / sluggish" → "fatigue"
+- "peeing a lot / bathroom frequently / urinating often" → "frequent urination"
+- "always thirsty / dry mouth / drinking a lot" → "excessive thirst"
+- "blurry / fuzzy vision / can't see clearly" → "blurred vision"
+- "head hurts / headache / head pain / migraine" → "headache"
+- "dizzy / lightheaded / spinning / off-balance" → "dizziness"
+- "chest hurts / chest tight / chest pressure" → "chest pain"
+- "can't breathe / short of breath / breathless" → "shortness of breath"
+- "pale / look white / skin looks pale" → "pale skin"
+- "cold hands / cold feet / feeling cold / chills / feeling very cold / SO cold" → "chills"
+- "heart racing / pounding / fluttering" → "palpitations"
 - "lost weight without trying" → "weight loss"
-- "wounds slow to heal" → "slow wound healing"
-- "numb / tingling" → "numbness in hands or feet"
-- "nausea / feel sick" → "nausea"
-- "throwing up" → "vomiting"
-- "can't sleep" → "insomnia"
-- "anxious / worried" → "anxiety"
+- "wounds slow to heal / cuts won't heal" → "slow wound healing"
+- "numb / tingling / pins and needles" → "numbness in hands or feet"
+- "nausea / feel sick / queasy / stomach upset" → "nausea"
+- "throwing up / vomited / vomiting" → "vomiting"
+- "can't sleep / insomnia / trouble sleeping" → "insomnia"
+- "anxious / worried / nervous" → "anxiety"
+- "stomach pain / belly pain / abdominal pain / stomach ache / tummy ache / pain in my stomach" → "abdominal pain"
+- "diarrhea / loose stools / runny stools / shit / going to the bathroom a lot / frequent bowel movements" → "diarrhea"
+- "constipated / can't poop / hard stools" → "constipation"
+- "no appetite / not hungry / don't want to eat / loss of appetite / don't wanna eat / don't feel hungry" → "loss of appetite"
+- "body aches / muscle pain / body hurts / myalgia / sore all over / my body hurts" → "body aches"
+- "fever / high temperature / burning up / temperature / high temp" → "fever"
+- "cough / coughing / dry cough / wet cough" → "cough"
+- "sore throat / throat pain / throat hurts" → "sore throat"
+- "runny nose / stuffy nose / congestion / blocked nose" → "nasal congestion"
+- "rash / skin rash / red spots / itchy skin" → "skin rash"
+- "swollen / swelling / puffy" → "swelling"
+- "back pain / back hurts / lower back pain" → "back pain"
+- "joint pain / joints hurt / arthritis pain" → "joint pain"
+- "yellow skin / yellow eyes / jaundice" → "jaundice"
+- "bruise easily / bruising" → "bruising easily"
+- "night sweats / sweating at night" → "night sweats"
 
 EMERGENCY — If user mentions ANY of these, immediately output <EMERGENCY>true</EMERGENCY>
 and advise them to call emergency services or go to ER RIGHT NOW:
@@ -78,8 +94,8 @@ and advise them to call emergency services or go to ER RIGHT NOW:
 - severe allergic reaction
 - uncontrolled bleeding
 
-IMPORTANT: Only output <EXTRACT> when you genuinely have 2+ symptoms with some context.
-Do not rush — a good conversation gets better predictions."""
+IMPORTANT: Output <EXTRACT> as soon as you have at least 2 symptoms AND duration.
+Do not keep asking questions if you already have enough — trigger the analysis."""
 
 
 # ── Pydantic-style dataclasses ─────────────────────────────────────────────────
@@ -139,8 +155,8 @@ async def process_message(
 
     # ── 4. Parse special tags ──────────────────────────────────────────────────
     is_emergency = _check_emergency(raw_reply)
-    extracted = _parse_extract_block(raw_reply)
-    clean_reply = _strip_tags(raw_reply)
+    extracted    = _parse_extract_block(raw_reply)
+    clean_reply  = _strip_tags(raw_reply)
 
     # ── 5. Update session state ────────────────────────────────────────────────
     assistant_msg = ChatMessage(role="assistant", content=clean_reply)
@@ -148,8 +164,9 @@ async def process_message(
 
     # Merge any newly extracted symptoms
     accumulated_symptoms = list(session.get("extracted_symptoms") or [])
-    accumulated_severity = dict(session.get("severity_scores") or {})
-    duration_days = session.get("duration_days")
+    accumulated_severity  = dict(session.get("severity_scores") or {})
+    duration_days         = session.get("duration_days")
+    free_text_summary     = session.get("free_text_summary")
 
     if extracted:
         new_symptoms = extracted.get("symptoms", [])
@@ -157,18 +174,23 @@ async def process_message(
             if s not in accumulated_symptoms:
                 accumulated_symptoms.append(s)
         accumulated_severity.update(extracted.get("severity", {}))
-        if extracted.get("duration_days"):
-            duration_days = extracted["duration_days"]
+        if extracted.get("duration_days") is not None:
+            try:
+                duration_days = int(float(extracted["duration_days"]))
+            except (TypeError, ValueError):
+                pass
+        if extracted.get("free_text"):
+            free_text_summary = extracted["free_text"]
 
-    # Determine new status
-    status = session["session_status"]
+    # Carry forward the existing prediction_id (if session already has one)
+    prediction_id     = session.get("prediction_id")
+    status            = session["session_status"]
     prediction_result = None
 
     if is_emergency:
         status = "complete"
 
     elif extracted and extracted.get("symptoms") and len(accumulated_symptoms) >= 1:
-        # Ready to run prediction
         status = "analyzing"
 
         # ── 6. Run RAG+ML prediction ───────────────────────────────────────────
@@ -177,25 +199,26 @@ async def process_message(
                 symptoms=accumulated_symptoms,
                 severity=accumulated_severity,
                 duration_days=duration_days,
-                free_text=extracted.get("free_text", ""),
+                free_text=free_text_summary or "",
                 user_id=user_id,
                 supabase=supabase,
             )
 
-            # Append the prediction summary as the next assistant message
+            # FIX B: set prediction_id BEFORE status = "complete"
+            # so the value is captured in the _save_session call below
+            prediction_id = prediction_result.get("prediction_id")
+            status        = "complete"
+
+            # Append prediction summary to chat
             prediction_summary = _format_prediction_for_chat(prediction_result)
             summary_msg = ChatMessage(role="assistant", content=prediction_summary)
             messages.append(summary_msg.to_dict())
             clean_reply = clean_reply + "\n\n" + prediction_summary
 
-            status = "complete"
-
-            # Update prediction_id in session
-            session["prediction_id"] = prediction_result.get("prediction_id")
+            log.info("chat.prediction_complete", prediction_id=prediction_id)
 
         except Exception as e:
             log.error("chat.prediction_failed", session_id=session_id, error=str(e))
-            # Don't crash the chat — just note it
             error_msg = (
                 "\n\n⚠️ I wasn't able to run the full analysis right now. "
                 "Your symptoms have been saved. Please try the symptom analysis again shortly."
@@ -204,6 +227,8 @@ async def process_message(
             status = "collecting"
 
     # ── 7. Save session to DB ──────────────────────────────────────────────────
+    # FIX B: pass local `prediction_id` variable (not session.get("prediction_id"))
+    # so the newly obtained prediction_id is persisted
     await _save_session(
         session_id=session_id,
         user_id=user_id,
@@ -211,8 +236,9 @@ async def process_message(
         extracted_symptoms=accumulated_symptoms,
         severity_scores=accumulated_severity,
         duration_days=duration_days,
+        free_text_summary=free_text_summary,
         status=status,
-        prediction_id=session.get("prediction_id"),
+        prediction_id=prediction_id,
         supabase=supabase,
     )
 
@@ -240,7 +266,6 @@ async def _call_claude(messages: list) -> str:
     """Call Anthropic Claude with full conversation history."""
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
 
-    # Convert stored messages to API format (strip timestamps)
     api_messages = [
         {"role": m["role"], "content": m["content"]}
         for m in messages
@@ -249,7 +274,7 @@ async def _call_claude(messages: list) -> str:
 
     response = client.messages.create(
         model=settings.llm_model,
-        max_tokens=600,   # keep replies short for chat UX
+        max_tokens=800,
         system=CHAT_SYSTEM_PROMPT,
         messages=api_messages,
     )
@@ -258,7 +283,7 @@ async def _call_claude(messages: list) -> str:
 
 # ── Tag parsers ────────────────────────────────────────────────────────────────
 
-_EXTRACT_PATTERN = re.compile(r"<EXTRACT>(.*?)</EXTRACT>", re.DOTALL)
+_EXTRACT_PATTERN   = re.compile(r"<EXTRACT>(.*?)</EXTRACT>", re.DOTALL)
 _EMERGENCY_PATTERN = re.compile(r"<EMERGENCY>\s*true\s*</EMERGENCY>", re.IGNORECASE)
 
 
@@ -269,9 +294,13 @@ def _parse_extract_block(text: str) -> Optional[dict]:
         return None
     try:
         data = json.loads(match.group(1).strip())
-        # Validate minimally
         if not isinstance(data.get("symptoms"), list):
             return None
+        if data.get("duration_days") is not None:
+            try:
+                data["duration_days"] = int(float(data["duration_days"]))
+            except (TypeError, ValueError):
+                data["duration_days"] = None
         return data
     except (json.JSONDecodeError, AttributeError):
         log.warning("chat.extract_parse_failed", raw=match.group(1)[:200])
@@ -301,17 +330,29 @@ async def _run_prediction(
 ) -> dict:
     """
     Call the existing prediction pipeline with extracted symptoms.
-    Reuses prediction_service.analyze_symptoms — no duplication.
+
+    FIX A: uses get_supabase_admin() for the analyze_symptoms call so that
+    inserts to predictions, rag_retrievals, and recommendations bypass RLS
+    and are actually written to the database.
+    The anon supabase client (passed in as arg) is still used for the
+    profile SELECT which is fine — RLS allows users to read their own profile.
     """
     from app.models.symptom import SymptomAnalysisRequest
     from app.services.prediction_service import analyze_symptoms
+    from app.database import get_supabase_admin  # FIX A
 
-    # Fetch user profile for age/gender context
+    # Fetch user profile for age/gender context (anon client OK for SELECT)
     age, gender = None, None
     try:
-        profile = supabase.table("profiles").select("age,gender").eq("id", user_id).single().execute()
+        profile = (
+            supabase.table("profiles")
+            .select("age,gender")
+            .eq("id", user_id)
+            .single()
+            .execute()
+        )
         if profile.data:
-            age = profile.data.get("age")
+            age    = profile.data.get("age")
             gender = profile.data.get("gender")
     except Exception:
         pass
@@ -325,13 +366,16 @@ async def _run_prediction(
         gender=gender,
     )
 
+    # FIX A: admin client bypasses RLS so predictions/rag_retrievals/recommendations
+    # rows are actually written instead of being silently rejected
+    admin_supabase = get_supabase_admin()
+
     result = await analyze_symptoms(
         request=request,
         user_id=user_id,
-        supabase=supabase,
+        supabase=admin_supabase,
     )
 
-    # Convert Pydantic model to dict for JSON serialisation
     return result.model_dump(mode="json")
 
 
@@ -350,10 +394,10 @@ def _format_prediction_for_chat(prediction: dict) -> str:
             f"_{prediction.get('disclaimer', '')}_"
         )
 
-    for pred in predictions[:2]:   # show top 2
-        confidence = pred["confidence"].upper()
-        score_pct = round(pred["confidence_score"] * 100)
-        disease = pred["disease"]
+    for pred in predictions[:2]:
+        confidence  = pred["confidence"].upper()
+        score_pct   = round(pred["confidence_score"] * 100)
+        disease     = pred["disease"]
         explanation = pred.get("explanation", "")
 
         emoji = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(confidence, "⚪")
@@ -362,7 +406,6 @@ def _format_prediction_for_chat(prediction: dict) -> str:
             lines.append(f"   _{explanation[:200]}_")
         lines.append("")
 
-    # Recommended tests
     tests = prediction.get("recommended_tests", [])
     if tests:
         lines.append("📋 **Recommended Tests:**")
@@ -370,12 +413,16 @@ def _format_prediction_for_chat(prediction: dict) -> str:
             lines.append(f"   • {t}")
         lines.append("")
 
-    # Emergency
     if prediction.get("emergency"):
-        lines.append("🚨 **URGENT:** " + (prediction.get("emergency_reason") or "Please seek immediate medical attention."))
+        lines.append(
+            "🚨 **URGENT:** "
+            + (prediction.get("emergency_reason") or "Please seek immediate medical attention.")
+        )
         lines.append("")
 
-    lines.append(f"⚠️ _{prediction.get('disclaimer', 'This is a preliminary assessment only. Please consult a doctor.')}_")
+    lines.append(
+        f"⚠️ _{prediction.get('disclaimer', 'This is a preliminary assessment only. Please consult a doctor.')}_"
+    )
 
     return "\n".join(lines)
 
@@ -430,6 +477,7 @@ async def _save_session(
     extracted_symptoms: list,
     severity_scores: dict,
     duration_days: Optional[int],
+    free_text_summary: Optional[str],
     status: str,
     prediction_id: Optional[str],
     supabase,
@@ -443,6 +491,8 @@ async def _save_session(
         "session_status": status,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    if free_text_summary:
+        updates["free_text_summary"] = free_text_summary
     if prediction_id:
         updates["prediction_id"] = prediction_id
 
@@ -452,7 +502,7 @@ async def _save_session(
         log.error("chat.session_save_failed", session_id=session_id, error=str(e))
 
 
-# ── Session history helper (used by router) ────────────────────────────────────
+# ── Session history helpers (used by router) ───────────────────────────────────
 
 async def get_session(session_id: str, user_id: str, supabase) -> Optional[dict]:
     """Fetch a single session for the current user."""

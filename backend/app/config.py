@@ -46,7 +46,7 @@ class Settings(BaseSettings):
 
     # ── RAG ────────────────────────────────────────────────────────────────────
     embedding_model: str = "text-embedding-ada-002"
-    llm_model: str = "claude-sonnet-4-20250514"
+    llm_model: str = "claude-sonnet-4-6"
     llm_max_tokens: int = 1500
     rag_top_k: int = 5
     rag_min_score: float = 0.72
