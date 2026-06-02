@@ -20,7 +20,7 @@ from app.config import settings
 from app.database import get_supabase_admin
 from app.models.symptom import (
     SymptomAnalysisRequest, PredictionResponse, DiseasePrediction,
-    LabReportRequest, LabReportResponse, LabTestResult,
+    LabReportRequest, LabReportResponse, LabTestResult, RAGSource,
 )
 from app.rag import retriever, prompt_builder
 from app.ml.inference import predictor, merge_rag_and_ml_results
@@ -49,6 +49,7 @@ async def analyze_symptoms(
     rag_chunk_ids    = []
     rag_contexts     = []
     rag_scores       = []
+    rag_sources      = []
 
     try:
         retrieved_chunks = retriever.retrieve_for_symptoms(
@@ -75,6 +76,17 @@ async def analyze_symptoms(
             rag_chunk_ids   = [c.chunk_id for c in retrieved_chunks]
             rag_contexts    = [{"id": c.chunk_id, "text": c.text[:500]} for c in retrieved_chunks]
             rag_scores      = [{"id": c.chunk_id, "score": c.score} for c in retrieved_chunks]
+            rag_sources     = [
+                RAGSource(
+                    chunk_id=c.chunk_id,
+                    disease_name=c.disease_name,
+                    section=c.section,
+                    text=c.text[:500],
+                    similarity_score=round(c.score, 4),
+                    page_number=c.page_number,
+                )
+                for c in retrieved_chunks
+            ]
         else:
             log.warning("prediction.no_rag_chunks_returned")
     except Exception as e:
@@ -203,6 +215,7 @@ async def analyze_symptoms(
         emergency=is_emergency,
         emergency_reason=emergency_reason,
         prediction_method=method,
+        sources=rag_sources,
         created_at=now,
     )
 

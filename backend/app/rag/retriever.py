@@ -50,15 +50,26 @@ class RetrievedChunk:
 
     @property
     def disease_name(self) -> str:
-        return self.metadata.get("disease_name", "Unknown")
+        # Prefer explicit field; fall back to source filename
+        if self.metadata.get("disease_name"):
+            return self.metadata["disease_name"]
+        src = self.metadata.get("source", "")
+        if src:
+            import os
+            return os.path.splitext(os.path.basename(src))[0]
+        return "Unknown"
 
     @property
     def section(self) -> str:
-        return self.metadata.get("section", "unknown")
+        return self.metadata.get("section") or self.metadata.get("page_label") or "unknown"
 
     @property
     def page_number(self) -> Optional[int]:
-        return self.metadata.get("page_number")
+        if "page_number" in self.metadata:
+            return int(self.metadata["page_number"])
+        if "page" in self.metadata:
+            return int(self.metadata["page"]) + 1  # LangChain uses 0-based index
+        return None
 
 
 def retrieve(
@@ -105,6 +116,15 @@ def retrieve(
                 namespace="default",
             )
             all_chunks.append(chunk)
+            log.info(
+                "retriever.chunk_metadata",
+                chunk_id=match["id"],
+                score=round(match["score"], 4),
+                metadata_keys=list(match["metadata"].keys()),
+                disease_name=match["metadata"].get("disease_name"),
+                section=match["metadata"].get("section"),
+                page_number=match["metadata"].get("page_number"),
+            )
 
     except Exception as e:
         log.error("retriever.query_failed", error=str(e))

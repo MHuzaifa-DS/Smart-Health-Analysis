@@ -45,6 +45,7 @@ class PredictionResponse(BaseModel):
     emergency: bool = False
     emergency_reason: Optional[str] = None
     prediction_method: str                 # "rag_ml_combined" | "rag_only" | "ml_only"
+    sources: List["RAGSource"] = []
     disclaimer: str = (
         "This is a preliminary AI-assisted assessment only. "
         "It does not constitute medical diagnosis. Please consult a qualified "

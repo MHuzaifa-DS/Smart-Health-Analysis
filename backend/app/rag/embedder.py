@@ -1,5 +1,5 @@
 """
-rag/embedder.py — Text embedding using OpenAI text-embedding-ada-002.
+rag/embedder.py — Text embedding using OpenAI text-embedding.
 Handles batching, rate limiting, and caching during ingestion.
 """
 from typing import List, Union

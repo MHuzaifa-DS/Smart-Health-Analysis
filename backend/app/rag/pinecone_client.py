@@ -32,7 +32,7 @@ def create_index_if_not_exists(dimension: int = 1536):
     """
     Create Pinecone index if it doesn't exist.
     Call this once during ingestion setup.
-    dimension=1536 for text-embedding-ada-002
+    dimension=1536 for text-embedding
     dimension=768  for sentence-transformers
     """
     from pinecone import Pinecone, ServerlessSpec
